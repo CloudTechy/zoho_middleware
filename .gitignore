@@ -1,0 +1,9 @@
+venv
+*.pyc
+*.pyo
+.DS_Store
+.env
+sample_odoo_webhook.json
+__pycache__/
+simple_odoo_webhook.json
+simple_odoo_webhook.py
