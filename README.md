@@ -108,23 +108,6 @@ Ensure your webhook server is running or Odoo is configured to send payloads to 
 
 ---
 
-## ✅ Best Practices
-
-* Always secure your `.env` file and **never** commit it to version control
-* Use proper exception handling in your `app.py` to handle invalid payloads
-* Enable HTTPS for production webhook endpoints
-* Set up logging to a file for better traceability
-
----
-
-## 🛠️ TODO
-
-* Add unit tests
-* Add database logging of payloads
-* Enable item update support
-* Improve warehouse ID mapping flexibility
-
----
 
 ## 📄 License
 
