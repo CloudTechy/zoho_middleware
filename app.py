@@ -14,22 +14,13 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-# Zoho API Configuration loaded from environment variables
-ZOHO_API_URL = os.getenv("ZOHO_API_URL")
-ZOHO_REFRESH_URL = os.getenv("ZOHO_REFRESH_URL")
-ACCESS_TOKEN = os.getenv("ZOHO_ACCESS_TOKEN")
-ORGANIZATION_ID = os.getenv("ZOHO_ORG_ID")
-WAREHOUSE_REQUIRED = os.getenv(
-    "WAREHOUSE_REQUIRED", "Surulere Store,Lekki Store"
-).split(",")
-LOCATION_NAME_REQUIRED = os.getenv(
-    "LOCATION_NAME_REQUIRED", "Surul/Stock,Lekki/Stock"
-).split(",")
-
 # Set up logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
+
+# memory cache for odoo stock moves still in progress
+in_progress_moves = {}
 
 
 @app.route("/odoo/webhook", methods=["POST"], strict_slashes=False)
@@ -40,36 +31,40 @@ def odoo_webhook():
     try:
         data = request.json
         model_action = data.get("x_model_action")
+        id = data.get("id")
+        update_state = data.get("state")
+        logging.info("items in memory cache: %s", in_progress_moves)
         # logging.info("Webhook payload: %s", data)
 
         if not model_action:
-            logging.warning("Ignoring webhook with missing or empty x_model_action")
-            return (
-                jsonify(
-                    {"status": "ignored", "message": "Missing or empty x_model_action"}
-                ),
-                200,
-            )
+            logging.warning("enable Ignoring webhook with missing or empty x_model_action")
+            # return (
+            #     jsonify(
+            #         {"status": "ignored", "message": "Missing or empty x_model_action"}
+            #     ),
+            #     200,
+            # )
 
-        if model_action.startswith("stock."):
+        if model_action and model_action.startswith("stock."):
 
-            logging.info("Processing stock-related webhook action: %s", model_action)
+            logging.info("Processing stock adjustment webhook action: %s", model_action)
 
             # Extract necessary data from the webhook payload
-            warehouse_info = data.get("company_id")
+            company_info = data.get("company_id")
             product_info = data.get("product_id")
             location_info = data.get("location_id")
             location_dest_info = data.get("location_dest_id")
-            quantity = data.get("quantity_done", 0.0)
+            quantity = data.get("product_qty", 0.0)
 
             # Validate the webhook payload and check if the warehouse is in scope
             if not is_valid_webhook_payload(
-                warehouse_info,
+                company_info,
                 product_info,
                 location_info,
                 location_dest_info,
                 quantity,
             ):
+                logging.warning("Invalid webhook payload or warehouse not in scope")
                 return (
                     jsonify(
                         {
@@ -79,12 +74,15 @@ def odoo_webhook():
                     ),
                     400,
                 )
+            logging.info("Valid webhook payload received")
+            
 
             # Access the second element from the lists
-            warehouse_name = warehouse_info[1]
+            company_name = company_info[1]
             product_name = product_info[1]
             location_name = location_info[1]
             location_dest_name = location_dest_info[1]
+            
 
             # process quantity
             quantity = get_adjusted_quantity(
@@ -93,7 +91,7 @@ def odoo_webhook():
             logging.info(
                 "Adjusted quantity for product '%s' in warehouse '%s' and from location '%s' to location '%s': %s ",
                 product_name,
-                warehouse_name,
+                company_name,
                 location_name,
                 location_dest_name,
                 quantity,
@@ -112,9 +110,9 @@ def odoo_webhook():
                     200,
                 )
 
-            # Fetch item ID from Zoho based on product and warehouse
-            item_warehouse_id = fetch_zoho_item_id(product_name, warehouse_name)
-            if not item_warehouse_id:
+            # Fetch item ID from Zoho based on product
+            item_id = fetch_zoho_item_id(product_name)
+            if not item_id:
                 return (
                     jsonify(
                         {
@@ -124,17 +122,30 @@ def odoo_webhook():
                     ),
                     404,
                 )
+            
 
             # Prepare the data for Zoho API update
-            item_id = item_warehouse_id["item_id"]
-            warehouse_id = item_warehouse_id["warehouse_id"]
+            warehouse_id = get_warehouse_id(company_name)
+            logging.info("Using warehouse ID: %s for company: %s", warehouse_id, company_name)
+            if not warehouse_id:
+                logging.error("Warehouse ID not found for company: %s", company_name)
+                return (
+                    jsonify(
+                        {
+                            "status": "error",
+                            "message": "Warehouse ID not found for the given company",
+                        }
+                    ),
+                    400,
+                )
+            
             zoho_data = {
                 "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                 "reason": "Webhook triggered adjustment",
                 "description": f"Adjustment from Odoo for {product_name}",
                 "reference_number": f"Webhook-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
                 "adjustment_type": "quantity",
-                "location_id": warehouse_id,
+                "warehouse_id": warehouse_id,
                 "line_items": [
                     {
                         "item_id": item_id,
@@ -142,44 +153,97 @@ def odoo_webhook():
                         "description": f"Stock updated from Odoo webhook",
                         "quantity_adjusted": quantity,
                         "unit": "pcs",
-                        # "location_id": warehouse_id,
+                        "warehouse_id": warehouse_id,
                     }
                 ],
             }
-
+           
             # Call Zoho API to update inventory
-            update_response = update_zoho_inventory(item_id, zoho_data)
+            if model_action == "stock.move_confirmed":
+                update_response = update_zoho_inventory_stock(item_id, zoho_data)
+
+                if update_response.status_code in [200, 201]:
+                    logging.info(
+                        "Successfully updated Zoho Inventory for item: %s",
+                        product_name,
+                    )
+                    return (
+                        jsonify(
+                            {
+                                "status": "success",
+                                "message": "Zoho Inventory updated successfully",
+                            }
+                        ),
+                        200,
+                    )
+                else:
+                    logging.error(
+                        "Failed to update Zoho Inventory: %s", update_response.text
+                    )
+                    return (
+                        jsonify(
+                            {
+                                "status": "error",
+                                "message": "Failed to update Zoho Inventory",
+                            }
+                        ),
+                        500,
+                    )
+            elif model_action == "stock.move_draft":
+                # store in memory cache
+                in_progress_moves[id] = zoho_data
+                logging.info(
+                    "Stored draft stock move in progress cache for id: %s", id
+                )
+                return (
+                    jsonify(
+                        {
+                            "status": "success",
+                            "message": "Draft stock move stored successfully",
+                        }
+                    ),
+                    200,
+                )
+        elif id in in_progress_moves and update_state == "done":
+            # process completed draft move
+            logging.info("Processing completed draft stock move for id: %s", id)
+            zoho_data = in_progress_moves.pop(id)
+            item_id = zoho_data["line_items"][0]["item_id"]
+            product_name = zoho_data["line_items"][0]["name"]
+            update_response = update_zoho_inventory_stock(item_id, zoho_data)
 
             if update_response.status_code in [200, 201]:
                 logging.info(
-                    "Successfully updated Zoho Inventory for item: %s",
+                    "Successfully updated Zoho Inventory for item from draft move: %s",
                     product_name,
                 )
                 return (
                     jsonify(
                         {
                             "status": "success",
-                            "message": "Zoho Inventory updated successfully",
+                            "message": "Zoho Inventory updated successfully from draft move",
                         }
                     ),
                     200,
                 )
             else:
                 logging.error(
-                    "Failed to update Zoho Inventory: %s", update_response.text
+                    "Failed to update Zoho Inventory from draft move: %s", update_response.text
                 )
                 return (
                     jsonify(
                         {
                             "status": "error",
-                            "message": "Failed to update Zoho Inventory",
+                            "message": "Failed to update Zoho Inventory from draft move",
                         }
                     ),
                     500,
                 )
-        elif model_action.startswith("product."):
+        elif model_action and model_action.startswith("product."):
             # validate required name field for product actions if any
             item_name = data.get("name")
+            # check if the zoho_item_payload has an image field
+            item_image = data.get("image")
             if not item_name:
                 logging.warning("Ignoring product webhook with missing or empty name")
                 return (

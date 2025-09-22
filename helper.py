@@ -8,21 +8,25 @@ ZOHO_API_URL = os.getenv("ZOHO_API_URL")
 ZOHO_REFRESH_URL = os.getenv("ZOHO_REFRESH_URL")
 ACCESS_TOKEN = os.getenv("ZOHO_ACCESS_TOKEN")
 ORGANIZATION_ID = os.getenv("ZOHO_ORG_ID")
-WAREHOUSE_REQUIRED = os.getenv(
-    "WAREHOUSE_REQUIRED", "Surulere Store,Lekki Store"
-).split(",")
+COMPANY_REQUIRED = os.getenv("COMPANY_REQUIRED", "Surulere Store, Lekki Store").split(
+    ","
+)
 LOCATION_NAME_REQUIRED = os.getenv(
-    "LOCATION_NAME_REQUIRED", "Surul/Stock,Lekki/Stock"
+    "LOCATION_NAME_REQUIRED", "Su-Sh/Stock,Le-Sh/Stock"
 ).split(",")
+WAREHOUSE_ID_MAP = os.getenv(
+    "WAREHOUSE_ID_MAP", '{"Su-Sh/Stock" : "4167669000195495001", "Le-sh/Stock":"4167669000000923299"}'
+)
 
 # Set up logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
+
 def get_adjusted_quantity(location_name, location_dest_name, quantity):
     """
-    Determine the adjusted quantity based on the model action and locations.
+    Determine the adjusted quantity based on the location usage and locations.
     """
     # Default to zero if quantity is None or not a number
     if not isinstance(quantity, (int, float)):
@@ -42,16 +46,16 @@ def get_adjusted_quantity(location_name, location_dest_name, quantity):
 
 
 def is_valid_webhook_payload(
-    warehouse_info, product_info, location_info, location_dest_info, quantity
+    company_info, product_info, location_info, location_dest_info, quantity
 ):
     """
     Validate webhook payload fields.
     """
-    # Ensure that warehouse_info and product_info are lists and contain the necessary data
+    # Ensure that company_info and product_info are lists and contain the necessary data
     return (
-        isinstance(warehouse_info, list)
-        and len(warehouse_info) > 1
-        and warehouse_info[1] in WAREHOUSE_REQUIRED
+        isinstance(company_info, list)
+        and len(company_info) > 1
+        and company_info[1] in COMPANY_REQUIRED
         and isinstance(product_info, list)
         and len(product_info) > 1
         and isinstance(quantity, (int, float))
@@ -62,7 +66,7 @@ def is_valid_webhook_payload(
     )
 
 
-def fetch_zoho_item_id(product_name: str, warehouse: str, retry=True) -> dict | None:
+def fetch_zoho_item_id(product_name: str, retry=True) -> dict | None:
     """
     Fetch Zoho item ID and warehouse ID by product name and warehouse.
     Retry once if token refresh is needed.
@@ -103,7 +107,43 @@ def fetch_zoho_item_id(product_name: str, warehouse: str, retry=True) -> dict | 
             return None
 
         logging.info("Fetched Zoho item ID: %s for product: %s", item_id, product_name)
+        return item_id
+    
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 401 and retry:
+            logging.warning(
+                "401 Unauthorized - refreshing token and retrying fetch_zoho_item_id"
+            )
+            if refresh_token():
+                ACCESS_TOKEN = os.getenv("ZOHO_ACCESS_TOKEN")
+                return fetch_zoho_item_id(product_name, retry=False)
+            else:
+                logging.error("Token refresh failed during fetch_zoho_item_id")
+                return None
+        else:
+            logging.error("API request failed in fetch_zoho_item_id: %s", e)
+            return None
+    except Exception as e:
+        logging.error("Error in fetch_zoho_item_id: %s", e)
+        return None
 
+
+def get_warehouse_id(company_name):
+    """
+    Get the Zoho warehouse ID based on the company name.
+    """
+    if company_name == COMPANY_REQUIRED[0].strip():
+        return os.getenv("ZOHO_WAREHOUSE_SURULERE_ID")
+    elif company_name == COMPANY_REQUIRED[1].strip():
+        return os.getenv("ZOHO_WAREHOUSE_LEKKI_ID")
+    return None
+
+def get_item_warehouse_info(item_id, product_name, warehouse, headers, retry):
+    """
+    Get detailed warehouse information for a specific item.
+    """
+    global ACCESS_TOKEN
+    try:
         # Fetch detailed item info by item ID
         response = requests.get(
             f"{ZOHO_API_URL}/items/{item_id}",
@@ -159,39 +199,25 @@ def fetch_zoho_item_id(product_name: str, warehouse: str, retry=True) -> dict | 
             f"Product '{product_name}' not found in the specified warehouse '{warehouse}'."
         )
         return None
-
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 401 and retry:
             logging.warning(
-                "401 Unauthorized - refreshing token and retrying fetch_zoho_item_id"
+                "401 Unauthorized - refreshing token and retrying get_item_warehouse_info"
             )
             if refresh_token():
                 ACCESS_TOKEN = os.getenv("ZOHO_ACCESS_TOKEN")
-                return fetch_zoho_item_id(product_name, warehouse, retry=False)
+                return get_item_warehouse_info(
+                    item_id, product_name, warehouse, headers, retry=False
+                )
             else:
-                logging.error("Token refresh failed during fetch_zoho_item_id")
+                logging.error("Token refresh failed during get_item_warehouse_info")
                 return None
         else:
-            logging.error("API request failed in fetch_zoho_item_id: %s", e)
+            logging.error("API request failed in get_item_warehouse_info: %s", e)
             return None
-    except Exception as e:
-        logging.error("Error in fetch_zoho_item_id: %s", e)
-        return None
 
-
-def get_warehouse_id(warehouse_name: str) -> str:
-    """
-    Get the Zoho warehouse ID based on the warehouse name.
-    """
-    if warehouse_name == WAREHOUSE_REQUIRED[0]:
-        return os.getenv("ZOHO_WAREHOUSE_SURULERE_ID")
-    elif warehouse_name == WAREHOUSE_REQUIRED[1]:
-        return os.getenv("ZOHO_WAREHOUSE_LEKKI_ID")
-    else:
-        return None
-
-
-def update_zoho_inventory(item_id, zoho_data, retry=True):
+    
+def update_zoho_inventory_stock(item_id, zoho_data, retry=True):
     """
     Update Zoho Inventory with the provided item ID and data.
     Retry once on 401.
@@ -216,7 +242,7 @@ def update_zoho_inventory(item_id, zoho_data, retry=True):
             )
             if refresh_token():
                 ACCESS_TOKEN = os.getenv("ZOHO_ACCESS_TOKEN")
-                return update_zoho_inventory(item_id, zoho_data, retry=False)
+                return update_zoho_inventory_stock(item_id, zoho_data, retry=False)
             else:
                 logging.error("Token refresh failed during update_zoho_inventory")
                 return e.response
@@ -265,11 +291,11 @@ def process_zoho_item_payload(data):
     """
     # check for company id in a list to determine warehouse
     company = data.get("company_id")[1] if data.get("company_id") else None
-    if company in WAREHOUSE_REQUIRED:
+    if company in COMPANY_REQUIRED:
         logging.info("Company '%s' requires location assignment.", company)
         warehouse_id = (
             os.getenv("ZOHO_WAREHOUSE_SURULERE_ID")
-            if company == WAREHOUSE_REQUIRED[0]
+            if company == COMPANY_REQUIRED[0]
             else os.getenv("ZOHO_WAREHOUSE_LEKKI_ID")
         )
     else:
@@ -344,4 +370,39 @@ def create_zoho_item(data, retry=True):
             return e.response
     except Exception as e:
         logging.error("Error in create_zoho_item: %s", e)
+        return None
+
+
+def upload_item_image(image, item_id):
+    """This function uploads an image to a Zoho item."""
+    global ACCESS_TOKEN
+    try:
+        response = requests.post(
+            f"{ZOHO_API_URL}/items/{item_id}/image",
+            headers={
+                "Authorization": f"Zoho-oauthtoken {ACCESS_TOKEN}",
+                "Content-Type": "multipart/form-data",
+            },
+            files={"image": image},
+        )
+        response.raise_for_status()
+        logging.info("Image uploaded successfully.")
+        return response
+
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 401:
+            logging.warning(
+                "401 Unauthorized - refreshing token and retrying upload_item_image"
+            )
+            if refresh_token():
+                ACCESS_TOKEN = os.getenv("ZOHO_ACCESS_TOKEN")
+                return upload_item_image(image, item_id)
+            else:
+                logging.error("Token refresh failed during upload_item_image")
+                return e.response
+        else:
+            logging.error("API request failed in upload_item_image: %s", e)
+            return e.response
+    except Exception as e:
+        logging.error("Error in upload_item_image: %s", e)
         return None
