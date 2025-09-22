@@ -341,7 +341,6 @@ def create_zoho_item(data, retry=True):
     global ACCESS_TOKEN
     try:
         zoho_item_payload = process_zoho_item_payload(data)
-        logging.info(f"Creating Zoho item with payload: {zoho_item_payload}")
 
         response = requests.post(
             f"{ZOHO_API_URL}/items?organization_id={ORGANIZATION_ID}",
