@@ -36,18 +36,17 @@ def odoo_webhook():
         id = data.get("id")
         update_state = data.get("state")
         logging.info("items in memory cache: %s", in_progress_moves)
-        # logging.info("Webhook payload: %s", data)
 
         if not model_action:
             logging.warning(
                 "enable Ignoring webhook with missing or empty x_model_action"
             )
-            # return (
-            #     jsonify(
-            #         {"status": "ignored", "message": "Missing or empty x_model_action"}
-            #     ),
-            #     200,
-            # )
+            return (
+                jsonify(
+                    {"status": "ignored", "message": "Missing or empty x_model_action"}
+                ),
+                200,
+            )
 
         if model_action and model_action.startswith("stock."):
 
@@ -68,7 +67,10 @@ def odoo_webhook():
                 location_dest_info,
                 quantity,
             ):
-                logging.warning("Invalid webhook payload or warehouse not in scope")
+                logging.warning(
+                    "Invalid webhook payload or warehouse not in scope : %s", data
+                )
+
                 return (
                     jsonify(
                         {
