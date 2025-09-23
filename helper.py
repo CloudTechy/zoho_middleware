@@ -423,7 +423,7 @@ def create_zoho_item(data, retry=True):
         logging.error("Error in create_zoho_item: %s", e)
         return None
 
-def call_odoo(method, model, args, kwargs=None):
+def call_odoo(method, model, args, kwargs=None, rpc_id=999):
     payload = {
         "jsonrpc": "2.0",
         "method": "call",
@@ -432,7 +432,7 @@ def call_odoo(method, model, args, kwargs=None):
             "method": "execute_kw",
             "args": [ODOO_DB, ODOO_UID, ODOO_PASSWORD, model, method, args],
         },
-        "id": 999,
+        "id": rpc_id,
     }
     if kwargs:
         payload["params"]["args"].append(kwargs)
@@ -476,22 +476,3 @@ def upload_item_image(image, item_id):
     except Exception as e:
         logging.error("Error in upload_item_image: %s", e)
         return None
-
-def call_odoo2(method, model, args, kwargs=None):
-    """Helper to call Odoo JSON-RPC API"""
-    payload = {
-        "jsonrpc": "2.0",
-        "method": "call",
-        "params": {
-            "service": "object",
-            "method": "execute_kw",
-            "args": [ODOO_DB, ODOO_UID, ODOO_PASSWORD, model, method, args],
-        },
-        "id": 200,
-    }
-    if kwargs:
-        payload["params"]["args"].append(kwargs)
-    response = requests.post(ODOO_URL, json=payload, verify=False)
-    response.raise_for_status()
-    return response.json().get("result")
-

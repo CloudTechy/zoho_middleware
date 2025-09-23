@@ -317,152 +317,203 @@ def odoo_webhook():
         return jsonify({"status": "error", "message": "Internal Server Error"}), 500
 
 
+global rpc_id
+rpc_id = 1001
+
+
 @app.route("/zoho/webhook", methods=["POST"], strict_slashes=False)
 def zoho_webhook():
     logging.info("Received Zoho Inventory webhook request")
     try:
         data = request.get_json()
-
-        inventory_adjustment = data.get('inventory_adjustment')
+        inventory_adjustment = data.get("inventory_adjustment")
         if inventory_adjustment is None:
             logging.warning("Unrecognized webhook payload")
-            return (
-                jsonify({"status": "ignored", "message": "Empty payload"}),
-                200,
-            )
+            return jsonify({"status": "ignored", "message": "Empty payload"}), 200
 
-        line_items = inventory_adjustment.get('line_items', [])[0]
-        logging.info("Webhook item ID: %s", line_items.get("item_id"))
-        logging.info("Webhook warehouse ID: %s", line_items.get("warehouse_id"))
-        logging.info("Webhook quantity adjusted: %s", line_items.get("quantity_adjusted"))
+        line_items = inventory_adjustment.get("line_items", [])
+        if not line_items:
+            logging.warning("No line items in inventory adjustment")
+            return jsonify({"status": "ignored", "message": "No line items"}), 200
 
-        if not line_items.get("item_id") or not line_items.get("warehouse_id") or not line_items.get("quantity_adjusted"):
+        line_item = line_items[0]
+
+        item_id = line_item.get("item_id")
+        warehouse_id = line_item.get("warehouse_id")
+        adjusted_quantity = line_item.get("quantity_adjusted")
+
+        if not item_id or not warehouse_id or adjusted_quantity is None:
             logging.warning("Ignoring webhook with missing required fields")
             return (
                 jsonify({"status": "ignored", "message": "Missing required fields"}),
                 200,
             )
 
-        item_id = line_items.get("item_id")
-        warehouse_id = line_items.get("warehouse_id")
-        quantity = line_items.get("quantity_adjusted")
+        logging.info(f"Webhook item ID: {item_id}")
+        logging.info(f"Webhook warehouse ID: {warehouse_id}")
+        logging.info(f"Webhook adjusted quantity: {adjusted_quantity}")
 
-        # Fetch item from Zoho
+        # Fetch item details from Zoho, including warehouses
         zoho_item = fetch_zoho_item(item_id)
-        warehouses = zoho_item.get("warehouses")
-        warehouse = next((w for w in warehouses if w.get("warehouse_id") == warehouse_id), None)
+        warehouses = zoho_item.get("warehouses", [])
+        zoho_warehouse = next(
+            (w for w in warehouses if w.get("warehouse_id") == warehouse_id), None
+        )
 
-        if not warehouse:
-            logging.warning("Warehouse ID %s not found in Zoho item warehouses", warehouse_id)
+        if not zoho_warehouse:
+            logging.warning(
+                f"Warehouse ID {warehouse_id} not found in Zoho item warehouses"
+            )
             return (
-                jsonify({"status": "error", "message": "Warehouse ID not found in Zoho item"}),
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "Warehouse ID not found in Zoho item",
+                    }
+                ),
                 404,
             )
 
-        # Map warehouse ID to Odoo location ID
+        # Map Zoho warehouse ID to Odoo warehouse/location ID
         if isinstance(WAREHOUSE_ODOO_ID_MAP, str):
             warehouse_mapping = ast.literal_eval(WAREHOUSE_ODOO_ID_MAP)
         else:
             warehouse_mapping = WAREHOUSE_ODOO_ID_MAP
 
         if warehouse_id not in warehouse_mapping:
-            logging.warning("Warehouse ID %s not in scope, ignoring webhook", warehouse_id)
+            logging.warning(
+                f"Warehouse ID {warehouse_id} not in scope, ignoring webhook"
+            )
             return (
                 jsonify({"status": "ignored", "message": "Warehouse ID not in scope"}),
                 200,
             )
 
-        warehouse_odooid = int(warehouse_mapping.get(warehouse_id))
-        logging.info("Mapped Zoho warehouse ID %s to Odoo warehouse ID %s", warehouse_id, warehouse_odooid)
+        warehouse_odooid = int(warehouse_mapping[warehouse_id])
+        logging.info(
+            f"Mapped Zoho warehouse ID {warehouse_id} to Odoo warehouse ID {warehouse_odooid}"
+        )
 
-        # Get product in Odoo
+        # Get product in Odoo by name
         product_name = zoho_item.get("name", "").strip()
-        logging.info("Looking up product in Odoo using name: %s", product_name)
+        logging.info(f"Looking up product in Odoo using name: {product_name}")
 
         product_result = call_odoo(
             "search_read",
             "product.product",
             [[["name", "=", product_name]]],
-            {"fields": ["id", "name"]}
+            {"fields": ["id", "name"]},
         )
 
         if not product_result:
-            logging.error("Product with name %s not found in Odoo", product_name)
+            logging.error(f"Product with name {product_name} not found in Odoo")
             return jsonify({"status": "error", "message": "Product not found"}), 404
 
         product_id = product_result[0]["id"]
-        logging.info("Found Odoo product ID: %s for name: %s", product_id, product_name)
+        logging.info(f"Found Odoo product ID: {product_id} for name: {product_name}")
 
-        # Find stock quant in Odoo
+        # Get Odoo stock quant(s) for product at mapped location
         stock_quant_result = call_odoo(
             "search_read",
             "stock.quant",
             [[["product_id", "=", product_id], ["location_id", "=", warehouse_odooid]]],
-            {"fields": ["id", "quantity"]}
+            {"fields": ["id", "quantity"]},
         )
 
-        quant_ids = [record["id"] for record in stock_quant_result] if stock_quant_result else []
-        odoo_quantity = float(stock_quant_result[0]["quantity"]) if stock_quant_result else 0.0
-        zoho_quantity = float(warehouse.get("warehouse_stock_on_hand", 0))
+        odoo_quantity = (
+            float(stock_quant_result[0]["quantity"]) if stock_quant_result else 0.0
+        )
+        zoho_quantity = float(zoho_warehouse.get("warehouse_stock_on_hand", 0))
 
-        logging.info("Odoo quantity at location %s: %s", warehouse_odooid, odoo_quantity)
-        logging.info("Zoho warehouse quantity: %s", zoho_quantity)
+        logging.info(f"Odoo quantity at location {warehouse_odooid}: {odoo_quantity}")
+        logging.info(f"Zoho warehouse quantity: {zoho_quantity}")
 
-        # ✅ Skip if quantities are equal
+        # Compare Odoo stock with Zoho warehouse stock
         if round(odoo_quantity, 2) == round(zoho_quantity, 2):
-            logging.info(
-                "No update needed. Odoo stock (%s) matches Zoho stock (%s) at location %s",
-                odoo_quantity,
-                zoho_quantity,
-                warehouse_odooid
+            logging.info("No update needed, quantities match.")
+            return (
+                jsonify({"status": "skipped", "message": "Stock already up-to-date"}),
+                200,
             )
-            return jsonify({"status": "skipped", "message": "Stock already up-to-date"}), 200
 
-        # ✅ Update if Odoo record exists
+        # If quantities differ, update Odoo with the webhook adjusted quantity
+        quant_ids = (
+            [record["id"] for record in stock_quant_result]
+            if stock_quant_result
+            else []
+        )
+
         if quant_ids:
             quant_id = quant_ids[0]
-            logging.info("Updating stock quant ID %s to quantity %s (auto-apply)", quant_id, quantity)
+            logging.info(
+                f"Updating stock quant ID {quant_id} to quantity {zoho_quantity} (auto-apply)"
+            )
 
             update_result = call_odoo(
                 "write",
                 "stock.quant",
-                [[quant_id], {
-                    "quantity": quantity,
-                    "inventory_quantity_auto_apply": True
-                }]
+                [
+                    [quant_id],
+                    {"quantity": zoho_quantity, "inventory_quantity_auto_apply": True},
+                ],
             )
 
             if not update_result:
                 logging.error("Failed to update stock quantity via auto-apply")
-                return jsonify({"status": "error", "message": "Failed to update stock"}), 500
+                return (
+                    jsonify({"status": "error", "message": "Failed to update stock"}),
+                    500,
+                )
 
-            logging.info("Successfully updated stock for product ID %s", product_id)
-            return jsonify({"status": "done", "message": "Webhook processed successfully"}), 200
+            logging.info(f"Successfully updated stock for product ID {product_id}")
+            return (
+                jsonify(
+                    {"status": "done", "message": "Webhook processed successfully"}
+                ),
+                200,
+            )
 
-        # ✅ Create if no existing quant
         else:
-            logging.info("Stock quant not found. Creating new quant for product %s in location %s", product_id, warehouse_odooid)
+            logging.info(
+                f"Stock quant not found. Creating new quant for product {product_id} in location {warehouse_odooid}"
+            )
 
             create_result = call_odoo(
                 "create",
                 "stock.quant",
-                [{
-                    "product_id": product_id,
-                    "location_id": warehouse_odooid,
-                    "quantity": zoho_quantity,
-                    "inventory_quantity_auto_apply": True
-                }]
+                [
+                    {
+                        "product_id": product_id,
+                        "location_id": warehouse_odooid,
+                        "quantity": zoho_quantity,
+                        "inventory_quantity_auto_apply": True,
+                    }
+                ],
             )
 
             if not create_result:
-                logging.error("Failed to create stock quant for product %s in location %s", product_id, warehouse_odooid)
-                return jsonify({"status": "error", "message": "Failed to create stock quant"}), 500
+                logging.error(
+                    f"Failed to create stock quant for product {product_id} in location {warehouse_odooid}"
+                )
+                return (
+                    jsonify(
+                        {"status": "error", "message": "Failed to create stock quant"}
+                    ),
+                    500,
+                )
 
-            logging.info("Successfully created and applied stock quant for product ID %s", product_id)
-            return jsonify({"status": "done", "message": "Webhook processed successfully"}), 200
+            logging.info(
+                f"Successfully created and applied stock quant for product ID {product_id}"
+            )
+            return (
+                jsonify(
+                    {"status": "done", "message": "Webhook processed successfully"}
+                ),
+                200,
+            )
 
     except Exception as e:
-        logging.error("Error processing webhook request: %s", traceback.format_exc())
+        logging.error(f"Error processing webhook request: {traceback.format_exc()}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
