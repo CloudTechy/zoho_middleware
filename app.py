@@ -37,17 +37,6 @@ def odoo_webhook():
         update_state = data.get("state")
         logging.info("items in memory cache: %s", in_progress_moves)
 
-        if not model_action:
-            logging.warning(
-                "enable Ignoring webhook with missing or empty x_model_action"
-            )
-            return (
-                jsonify(
-                    {"status": "ignored", "message": "Missing or empty x_model_action"}
-                ),
-                200,
-            )
-
         if model_action and model_action.startswith("stock."):
 
             logging.info("Processing stock adjustment webhook action: %s", model_action)
@@ -117,6 +106,7 @@ def odoo_webhook():
             # Fetch item ID from Zoho based on product
             item_id = fetch_zoho_item_id(product_name)
             if not item_id:
+                logging.info("Product not found in Zoho Inventory: %s", product_name)
                 return (
                     jsonify(
                         {
@@ -278,6 +268,27 @@ def odoo_webhook():
                     "Successfully created Zoho Inventory item: %s",
                     item_name,
                 )
+                if item_image:
+                    logging.info("Item has image field, proceeding to upload image")
+                    # extract item_id from the create_status response
+                    item_data = create_status.json()
+                    item_id = item_data.get("item", {}).get("item_id")
+                    if item_id:
+                        upload_status = upload_zoho_item_image(item_id, item_image)
+                        if upload_status and upload_status.status_code in [200, 201]:
+                            logging.info(
+                                "Successfully uploaded image for Zoho Inventory item: %s",
+                                item_name,
+                            )
+                        else:
+                            logging.error(
+                                "Failed to upload image for Zoho Inventory item: %s",
+                                item_name,
+                            )
+                    else:
+                        logging.error(
+                            "Item ID not found in Zoho response, cannot upload image"
+                        )
                 return (
                     jsonify(
                         {

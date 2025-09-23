@@ -476,3 +476,54 @@ def upload_item_image(image, item_id):
     except Exception as e:
         logging.error("Error in upload_item_image: %s", e)
         return None
+
+def upload_zoho_item_image(item_id, item_image):
+    """
+    Upload an image to a Zoho item by item ID.
+    """
+    if not item_image:
+        logging.warning("No image provided for upload.")
+        return None
+
+    try:
+        with requests.get(item_image, stream=True) as img_response:
+            img_response.raise_for_status()
+            files = {"image": img_response.content}
+            return upload_item_image(files, item_id)
+    except requests.exceptions.RequestException as e:
+        logging.error("Failed to fetch image from URL: %s", e)
+        return None
+
+def upload_item_image(files, item_id):
+    """This function uploads an image to a Zoho item."""
+    global ACCESS_TOKEN
+    try:
+        response = requests.post(
+            f"{ZOHO_API_URL}/items/{item_id}/image",
+            headers={
+                "Authorization": f"Zoho-oauthtoken {ACCESS_TOKEN}",
+                # "Content-Type": "multipart/form-data",  # requests sets this automatically
+            },
+            files=files,
+        )
+        response.raise_for_status()
+        logging.info("Image uploaded successfully.")
+        return response
+
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 401:
+            logging.warning(
+                "401 Unauthorized - refreshing token and retrying upload_item_image"
+            )
+            if refresh_token():
+                ACCESS_TOKEN = os.getenv("ZOHO_ACCESS_TOKEN")
+                return upload_item_image(files, item_id)
+            else:
+                logging.error("Token refresh failed during upload_item_image")
+                return e.response
+        else:
+            logging.error("API request failed in upload_item_image: %s", e)
+            return e.response
+    except Exception as e:
+        logging.error("Error in upload_item_image: %s", e)
+        return None
