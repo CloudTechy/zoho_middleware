@@ -2,6 +2,14 @@ import os
 import logging
 from dotenv import load_dotenv
 import requests
+import traceback
+import urllib3
+
+# Suppress SSL warnings for this test
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Zoho API Configuration loaded from environment variables
 ZOHO_API_URL = os.getenv("ZOHO_API_URL")
@@ -17,6 +25,11 @@ LOCATION_NAME_REQUIRED = os.getenv(
 WAREHOUSE_ID_MAP = os.getenv(
     "WAREHOUSE_ID_MAP", '{"Su-Sh/Stock" : "4167669000195495001", "Le-sh/Stock":"4167669000000923299"}'
 )
+ODOO_URL = os.getenv("ODOO_URL")
+ODOO_DB = os.getenv("ODOO_DB")
+ODOO_UID = os.getenv("ODOO_UID")
+ODOO_PASSWORD = os.getenv("ODOO_PASSWORD")
+
 
 # Set up logging
 logging.basicConfig(
@@ -66,7 +79,7 @@ def is_valid_webhook_payload(
     )
 
 
-def fetch_zoho_item_id(product_name: str, retry=True) -> dict | None:
+def fetch_zoho_item_id(product_name, retry=True):
     """
     Fetch Zoho item ID and warehouse ID by product name and warehouse.
     Retry once if token refresh is needed.
@@ -127,6 +140,50 @@ def fetch_zoho_item_id(product_name: str, retry=True) -> dict | None:
         logging.error("Error in fetch_zoho_item_id: %s", e)
         return None
 
+def fetch_zoho_item(item_id, retry=True):
+    """
+    Fetch Zoho item by item ID.
+    Retry once if token refresh is needed.
+
+    Returns:
+        dict with keys 'item_id',
+        or None if not found or error occurs.
+    """
+    global ACCESS_TOKEN  # to update it after refresh
+
+    try:
+        headers = {
+            "Authorization": f"Zoho-oauthtoken {ACCESS_TOKEN}",
+            "Content-Type": "application/json",
+        }
+        # Search item by item ID
+        response = requests.get(
+            f"{ZOHO_API_URL}/items/{item_id}",
+            headers=headers,
+            params={"organization_id": ORGANIZATION_ID},
+        )
+        
+        response.raise_for_status()
+        item = response.json().get("item", None)
+        return item
+    
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 401 and retry:
+            logging.warning(
+                "401 Unauthorized - refreshing token and retrying fetch_zoho_item"
+            )
+            if refresh_token():
+                ACCESS_TOKEN = os.getenv("ZOHO_ACCESS_TOKEN")
+                return fetch_zoho_item(item_id, retry=False)
+            else:
+                logging.error("Token refresh failed during fetch_zoho_item")
+                return None
+        else:
+            logging.error("API request failed in fetch_zoho_item: %s", traceback.format_exc())
+            return None
+    except Exception as e:
+        logging.error("Error in fetch_zoho_item: %s", traceback.format_exc())
+        return None
 
 def get_warehouse_id(company_name):
     """
@@ -317,11 +374,6 @@ def process_zoho_item_payload(data):
         "sku": data.get("barcode") or data.get("id"),
         "purchase_description": data.get("description_purchase")
         or "No purchase description",
-        "item_tax_preferences": (
-            [{"tax_id": data["taxes_id"][0], "tax_specification": "intra"}]
-            if data.get("taxes_id")
-            else []
-        ),
     }
     if warehouse_id:
         zoho_item_payload["locations"] = [
@@ -371,6 +423,25 @@ def create_zoho_item(data, retry=True):
         logging.error("Error in create_zoho_item: %s", e)
         return None
 
+def call_odoo(method, model, args, kwargs=None):
+    payload = {
+        "jsonrpc": "2.0",
+        "method": "call",
+        "params": {
+            "service": "object",
+            "method": "execute_kw",
+            "args": [ODOO_DB, ODOO_UID, ODOO_PASSWORD, model, method, args],
+        },
+        "id": 999,
+    }
+    if kwargs:
+        payload["params"]["args"].append(kwargs)
+
+    logging.info("Sending payload: %s", payload)
+
+    response = requests.post(ODOO_URL, json=payload, verify=False)
+    response.raise_for_status()
+    return response.json().get("result")
 
 def upload_item_image(image, item_id):
     """This function uploads an image to a Zoho item."""
@@ -405,3 +476,22 @@ def upload_item_image(image, item_id):
     except Exception as e:
         logging.error("Error in upload_item_image: %s", e)
         return None
+
+def call_odoo2(method, model, args, kwargs=None):
+    """Helper to call Odoo JSON-RPC API"""
+    payload = {
+        "jsonrpc": "2.0",
+        "method": "call",
+        "params": {
+            "service": "object",
+            "method": "execute_kw",
+            "args": [ODOO_DB, ODOO_UID, ODOO_PASSWORD, model, method, args],
+        },
+        "id": 200,
+    }
+    if kwargs:
+        payload["params"]["args"].append(kwargs)
+    response = requests.post(ODOO_URL, json=payload, verify=False)
+    response.raise_for_status()
+    return response.json().get("result")
+
