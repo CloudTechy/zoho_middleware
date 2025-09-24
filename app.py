@@ -236,8 +236,8 @@ def odoo_webhook():
         elif model_action and model_action.startswith("product."):
             # validate required name field for product actions if any
             item_name = data.get("name")
-            # check if the zoho_item_payload has an image field
-            item_image = data.get("image")
+            # check if the odoo_item_payload has an image field
+            item_image = data.get("image_1920")
             if not item_name:
                 logging.warning("Ignoring product webhook with missing or empty name")
                 return (
@@ -269,7 +269,7 @@ def odoo_webhook():
                     item_name,
                 )
                 if item_image:
-                    logging.info("Item has image field, proceeding to upload image")
+                    logging.info("Item has image field, proceeding to upload image at: %s", item_image)
                     # extract item_id from the create_status response
                     item_data = create_status.json()
                     item_id = item_data.get("item", {}).get("item_id")
@@ -289,6 +289,7 @@ def odoo_webhook():
                         logging.error(
                             "Item ID not found in Zoho response, cannot upload image"
                         )
+                logging.info("Zoho Inventory item created successfully")
                 return (
                     jsonify(
                         {

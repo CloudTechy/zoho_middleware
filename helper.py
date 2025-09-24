@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 import requests
 import traceback
 import urllib3
+import io
 
 # Suppress SSL warnings for this test
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -486,9 +487,13 @@ def upload_zoho_item_image(item_id, item_image):
         return None
 
     try:
-        with requests.get(item_image, stream=True) as img_response:
+        with requests.get(item_image, stream=True, verify=False) as img_response:
             img_response.raise_for_status()
-            files = {"image": img_response.content}
+            image_file = io.BytesIO(img_response.content)
+            files = {
+                "image": ("product_image.jpg", image_file, "image/jpeg")
+            }
+            logging.info("Fetched image from URL successfully. ")
             return upload_item_image(files, item_id)
     except requests.exceptions.RequestException as e:
         logging.error("Failed to fetch image from URL: %s", e)
@@ -499,12 +504,12 @@ def upload_item_image(files, item_id):
     global ACCESS_TOKEN
     try:
         response = requests.post(
-            f"{ZOHO_API_URL}/items/{item_id}/image",
+            f"{ZOHO_API_URL}/items/{item_id}/image?organization_id={ORGANIZATION_ID}",
             headers={
                 "Authorization": f"Zoho-oauthtoken {ACCESS_TOKEN}",
                 # "Content-Type": "multipart/form-data",  # requests sets this automatically
             },
-            files=files,
+            files=files, 
         )
         response.raise_for_status()
         logging.info("Image uploaded successfully.")
