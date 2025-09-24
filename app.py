@@ -1,17 +1,42 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import logging
-from dotenv import load_dotenv
 import requests
 from datetime import datetime, timezone
 from helper import *
 import os
 import ast
-
+from redis_helper import redis_set, redis_get, redis_delete, redis_key_exists, list_all_keys
+import traceback
 
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
+
+# # Sample data
+# id = "123456"  # Replace with your actual ID
+# zoho_data = {"name": "Sample Draft Move", "id": id}  # Example value
+
+# # Set data in Redis
+# key_id = f"draft_move_{id}"
+# redis_set(key_id, zoho_data, ex=72000)  # Expires in 20 hours
+
+# # Get data from Redis
+# retrieved_data = redis_get(key_id)
+# logging.info(f"Retrieved data: {retrieved_data}")
+
+# # Check if the key exists
+# if redis_key_exists(key_id):
+#     logging.info(f"Key {key_id} exists in Redis.")
+# else:
+#     logging.warning(f"Key {key_id} does not exist in Redis.")
+
+# # List all keys
+# all_keys = list_all_keys()
+# logging.info(f"All keys in Redis: {all_keys}")
+
+# exit(0)
+
 
 # Set up logging
 logging.basicConfig(
@@ -21,8 +46,6 @@ WAREHOUSE_ODOO_ID_MAP = os.getenv(
     "WAREHOUSE_ODOO_ID_MAP", {"4167669000195495001": "32", "4167669000000923299": "22"}
 )
 
-# process memory cache for odoo stock moves still in progress
-in_progress_moves = {}
 
 @app.route("/odoo/webhook", methods=["POST"], strict_slashes=False)
 def odoo_webhook_handler():
@@ -32,9 +55,11 @@ def odoo_webhook_handler():
     try:
         data = request.json
         model_action = data.get("x_model_action")
-        id = data.get("id")
+        id = data.get('id')
+        logging.info("Received Odoo webhook for draft move: %s", id)
         update_state = data.get("state")
-        logging.info("items in memory cache: %s", in_progress_moves)
+        
+        logging.info("items in memory cache: %s", list_all_keys())
 
         if model_action and model_action.startswith("stock."):
 
@@ -184,9 +209,9 @@ def odoo_webhook_handler():
                         500,
                     )
             elif model_action == "stock.move_draft":
-                # store in memory cache
-                in_progress_moves[id] = zoho_data
-                logging.info("Stored draft stock move in progress cache for id: %s", id)
+                # store in redis cache
+                redis_set(id, zoho_data, ex=72000)
+                logging.info("Stored draft stock move in Redis cache for id: %s", id)
                 return (
                     jsonify(
                         {
@@ -196,10 +221,26 @@ def odoo_webhook_handler():
                     ),
                     200,
                 )
-        elif id in in_progress_moves and update_state == "done":
+        elif redis_key_exists(id) and update_state == "done":
             # process completed draft move
             logging.info("Processing completed draft stock move for id: %s", id)
-            zoho_data = in_progress_moves.pop(id)
+            # retrieve from redis cache
+            zoho_data = redis_get(id)
+            if not zoho_data:
+                logging.error("Draft move data not found in Redis for id: %s", id)
+                return (
+                    jsonify(
+                        {
+                            "status": "error",
+                            "message": "Draft move data not found in cache",
+                        }
+                    ),
+                    404,
+                )
+            # remove from redis cache
+            redis_delete(id)
+            logging.info("Removed draft stock move from Redis cache for id: %s", id)
+            # process the zoho_data
             item_id = zoho_data["line_items"][0]["item_id"]
             product_name = zoho_data["line_items"][0]["name"]
             update_response = update_zoho_inventory_stock(item_id, zoho_data)
