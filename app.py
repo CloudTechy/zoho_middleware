@@ -21,12 +21,11 @@ WAREHOUSE_ODOO_ID_MAP = os.getenv(
     "WAREHOUSE_ODOO_ID_MAP", {"4167669000195495001": "32", "4167669000000923299": "22"}
 )
 
-# memory cache for odoo stock moves still in progress
+# process memory cache for odoo stock moves still in progress
 in_progress_moves = {}
 
-
 @app.route("/odoo/webhook", methods=["POST"], strict_slashes=False)
-def odoo_webhook():
+def odoo_webhook_handler():
     """
     Endpoint to receive webhooks from Odoo and update Zoho Inventory item quantity.
     """
@@ -330,13 +329,8 @@ def odoo_webhook():
         logging.error("An internal server error occurred: %s", str(e))
         return jsonify({"status": "error", "message": "Internal Server Error"}), 500
 
-
-global rpc_id
-rpc_id = 1001
-
-
 @app.route("/zoho/webhook", methods=["POST"], strict_slashes=False)
-def zoho_webhook():
+def zoho_webhook_handler():
     logging.info("Received Zoho Inventory webhook request")
     try:
         data = request.get_json()
