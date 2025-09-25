@@ -13,31 +13,6 @@ import traceback
 app = Flask(__name__)
 CORS(app)
 
-# # Sample data
-# id = "123456"  # Replace with your actual ID
-# zoho_data = {"name": "Sample Draft Move", "id": id}  # Example value
-
-# # Set data in Redis
-# key_id = f"draft_move_{id}"
-# redis_set(key_id, zoho_data, ex=72000)  # Expires in 20 hours
-
-# # Get data from Redis
-# retrieved_data = redis_get(key_id)
-# logging.info(f"Retrieved data: {retrieved_data}")
-
-# # Check if the key exists
-# if redis_key_exists(key_id):
-#     logging.info(f"Key {key_id} exists in Redis.")
-# else:
-#     logging.warning(f"Key {key_id} does not exist in Redis.")
-
-# # List all keys
-# all_keys = list_all_keys()
-# logging.info(f"All keys in Redis: {all_keys}")
-
-# exit(0)
-
-
 # Set up logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -567,4 +542,4 @@ def zoho_webhook_handler():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=True, host="0.0.0.0", port=4321)
