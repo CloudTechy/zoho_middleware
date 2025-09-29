@@ -5,7 +5,10 @@ import requests
 import traceback
 import urllib3
 import io
-
+import xmlrpc.client
+import base64
+import ssl
+from odoo_image_fetcher import ImageFetcher
 # Suppress SSL warnings for this test
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -24,9 +27,12 @@ LOCATION_NAME_REQUIRED = os.getenv(
     "LOCATION_NAME_REQUIRED", "Su-Sh/Stock,Le-Sh/Stock"
 ).split(",")
 WAREHOUSE_ID_MAP = os.getenv(
-    "WAREHOUSE_ID_MAP", '{"Su-Sh/Stock" : "4167669000195495001", "Le-sh/Stock":"4167669000000923299"}'
+    "WAREHOUSE_ID_MAP",
+    '{"Su-Sh/Stock" : "4167669000195495001", "Le-sh/Stock":"4167669000000923299"}',
 )
 ODOO_URL = os.getenv("ODOO_URL")
+ODOO_BASE_URL = os.getenv("ODOO_BASE_URL")
+ODOO_USERNAME = os.getenv("ODOO_USERNAME")
 ODOO_DB = os.getenv("ODOO_DB")
 ODOO_UID = os.getenv("ODOO_UID")
 ODOO_PASSWORD = os.getenv("ODOO_PASSWORD")
@@ -122,7 +128,7 @@ def fetch_zoho_item_id(product_name, retry=True):
 
         logging.info("Fetched Zoho item ID: %s for product: %s", item_id, product_name)
         return item_id
-    
+
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 401 and retry:
             logging.warning(
@@ -140,6 +146,7 @@ def fetch_zoho_item_id(product_name, retry=True):
     except Exception as e:
         logging.error("Error in fetch_zoho_item_id: %s", e)
         return None
+
 
 def fetch_zoho_item(item_id, retry=True):
     """
@@ -163,11 +170,11 @@ def fetch_zoho_item(item_id, retry=True):
             headers=headers,
             params={"organization_id": ORGANIZATION_ID},
         )
-        
+
         response.raise_for_status()
         item = response.json().get("item", None)
         return item
-    
+
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 401 and retry:
             logging.warning(
@@ -180,11 +187,14 @@ def fetch_zoho_item(item_id, retry=True):
                 logging.error("Token refresh failed during fetch_zoho_item")
                 return None
         else:
-            logging.error("API request failed in fetch_zoho_item: %s", traceback.format_exc())
+            logging.error(
+                "API request failed in fetch_zoho_item: %s", traceback.format_exc()
+            )
             return None
     except Exception as e:
         logging.error("Error in fetch_zoho_item: %s", traceback.format_exc())
         return None
+
 
 def get_warehouse_id(company_name):
     """
@@ -195,6 +205,7 @@ def get_warehouse_id(company_name):
     elif company_name == COMPANY_REQUIRED[1].strip():
         return os.getenv("ZOHO_WAREHOUSE_LEKKI_ID")
     return None
+
 
 def get_item_warehouse_info(item_id, product_name, warehouse, headers, retry):
     """
@@ -274,7 +285,7 @@ def get_item_warehouse_info(item_id, product_name, warehouse, headers, retry):
             logging.error("API request failed in get_item_warehouse_info: %s", e)
             return None
 
-    
+
 def update_zoho_inventory_stock(item_id, zoho_data, retry=True):
     """
     Update Zoho Inventory with the provided item ID and data.
@@ -366,15 +377,15 @@ def process_zoho_item_payload(data):
         "unit": data.get("uom_name", "pcs"),
         "item_type": "inventory" if data.get("type") == "product" else "sales",
         "product_type": "goods",
-        "tax_id": data["taxes_id"][0] if data.get("taxes_id") else None,
-        "description": data.get("product_tooltip", "No description available"),
+        # "tax_id": data["taxes_id"][0] if data.get("taxes_id") else None,
+        "description": data.get("product_tooltip") or data.get("description_purchase"),
         "rate": data.get("list_price", 0.0),
         "purchase_rate": data.get("standard_price", 0.0),
-        "reorder_level": 0,
+        "reorder_level": 10,
         "track_inventory": True,
         "sku": data.get("barcode") or data.get("id"),
-        "purchase_description": data.get("description_purchase")
-        or "No purchase description",
+        "purchase_description": data.get("description_pickingout")
+        or data.get("description_purchase"),
     }
     if warehouse_id:
         zoho_item_payload["locations"] = [
@@ -424,6 +435,7 @@ def create_zoho_item(data, retry=True):
         logging.error("Error in create_zoho_item: %s", e)
         return None
 
+
 def call_odoo(method, model, args, kwargs=None, rpc_id=999):
     payload = {
         "jsonrpc": "2.0",
@@ -444,72 +456,23 @@ def call_odoo(method, model, args, kwargs=None, rpc_id=999):
     response.raise_for_status()
     return response.json().get("result")
 
-def upload_item_image(image, item_id):
+
+def upload_item_image(url, item_id):
     """This function uploads an image to a Zoho item."""
     global ACCESS_TOKEN
     try:
-        response = requests.post(
-            f"{ZOHO_API_URL}/items/{item_id}/image",
-            headers={
-                "Authorization": f"Zoho-oauthtoken {ACCESS_TOKEN}",
-                "Content-Type": "multipart/form-data",
-            },
-            files={"image": image},
-        )
-        response.raise_for_status()
-        logging.info("Image uploaded successfully.")
-        return response
-
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 401:
-            logging.warning(
-                "401 Unauthorized - refreshing token and retrying upload_item_image"
-            )
-            if refresh_token():
-                ACCESS_TOKEN = os.getenv("ZOHO_ACCESS_TOKEN")
-                return upload_item_image(image, item_id)
-            else:
-                logging.error("Token refresh failed during upload_item_image")
-                return e.response
-        else:
-            logging.error("API request failed in upload_item_image: %s", e)
-            return e.response
-    except Exception as e:
-        logging.error("Error in upload_item_image: %s", e)
-        return None
-
-def upload_zoho_item_image(item_id, item_image):
-    """
-    Upload an image to a Zoho item by item ID.
-    """
-    if not item_image:
-        logging.warning("No image provided for upload.")
-        return None
-
-    try:
-        with requests.get(item_image, stream=True, verify=False) as img_response:
-            img_response.raise_for_status()
-            image_file = io.BytesIO(img_response.content)
-            files = {
-                "image": ("product_image.jpg", image_file, "image/jpeg")
-            }
-            logging.info("Fetched image from URL successfully. ")
-            return upload_item_image(files, item_id)
-    except requests.exceptions.RequestException as e:
-        logging.error("Failed to fetch image from URL: %s", e)
-        return None
-
-def upload_item_image(files, item_id):
-    """This function uploads an image to a Zoho item."""
-    global ACCESS_TOKEN
-    try:
+        file = ImageFetcher.fetch_image(url)
+        files = {"image": ("product_image.jpg", file, "image/jpeg")}
+        if not file:
+            logging.error("Failed to fetch image from Odoo.")
+            return None
         response = requests.post(
             f"{ZOHO_API_URL}/items/{item_id}/image?organization_id={ORGANIZATION_ID}",
             headers={
                 "Authorization": f"Zoho-oauthtoken {ACCESS_TOKEN}",
                 # "Content-Type": "multipart/form-data",  # requests sets this automatically
             },
-            files=files, 
+            files=files,
         )
         response.raise_for_status()
         logging.info("Image uploaded successfully.")
@@ -532,3 +495,67 @@ def upload_item_image(files, item_id):
     except Exception as e:
         logging.error("Error in upload_item_image: %s", e)
         return None
+
+
+def fetch_image(image_path, model="product.template"):
+    logging.info("Starting image fetch process for: %s", image_path)
+
+    try:
+        # Create an unverified SSL context
+        unverified_context = ssl._create_unverified_context()
+
+        # Pass the unverified context to ServerProxy
+        common = xmlrpc.client.ServerProxy(
+            f"{ODOO_BASE_URL}/xmlrpc/2/common", context=unverified_context
+        )
+        uid = common.authenticate(
+            ODOO_DB, ODOO_USERNAME, ODOO_PASSWORD, {}
+        )
+
+        if not uid:
+            logging.error("Authentication failed.")
+            exit()
+
+        logging.info("Authentication successful. User ID: %s", uid)
+
+        # Pass the unverified context to the models ServerProxy as well
+        models = xmlrpc.client.ServerProxy(
+            f"{ODOO_BASE_URL}/xmlrpc/2/object", context=unverified_context
+        )
+
+        url = image_path.strip()
+        url_breaks = url.split("/")
+
+        # Use a list to access the extracted image ID and name
+        image_id = int(url_breaks[-2])  # Convert ID to integer
+        image_name = url_breaks[-1].strip()
+        logging.info("Extracted image name: %s", image_name)
+        logging.info("Extracted image ID: %s", image_id)
+
+        # Correctly handle the API response
+        image_record = models.execute_kw(
+            ODOO_DB,
+            uid,
+            ODOO_PASSWORD,
+            model,
+            "read",
+            [[image_id]],
+            {"fields": [image_name]},  # Use the extracted image name here
+        )
+
+        if image_record and image_record[0].get(image_name):
+            image_data_base64 = image_record[0][image_name]
+            logging.info(
+                "Image data (Base64) fetched successfully for record %s.", image_id
+            )
+            # Decode the Base64 data and save the file
+            image_bytes = base64.b64decode(image_data_base64)
+            filename = f"product_image_{image_id}.png"
+            with open(filename, "wb") as img_file:
+                img_file.write(image_bytes)
+            logging.info("Image saved successfully as %s", filename)
+        else:
+            logging.info("No image data found for record %s.", image_id)
+
+    except Exception as e:
+        logging.error("An error occurred: %s", e)

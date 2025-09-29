@@ -8,3 +8,4 @@ __pycache__/
 simple_odoo_webhook.json
 simple_odoo_webhook.py
 test.py
+image_fetcher.py
