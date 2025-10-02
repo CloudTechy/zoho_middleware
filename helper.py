@@ -147,6 +147,101 @@ def fetch_zoho_item_id(product_name, retry=True):
         logging.error("Error in fetch_zoho_item_id: %s", e)
         return None
 
+def search_zoho_item(search_text=None, sku=None, retry=True):
+    """
+    Search Zoho item by SKU (preferred) or product name.
+    Retry once if token refresh is needed.
+    """
+    global ACCESS_TOKEN
+
+    try:
+        headers = {
+            "Authorization": f"Zoho-oauthtoken {ACCESS_TOKEN}",
+            "Content-Type": "application/json",
+        }
+        base_url = f"{ZOHO_API_URL}/items"
+
+        # 1️⃣ First, try SKU if provided
+        if sku:
+            params = {"organization_id": ORGANIZATION_ID, "sku_contains": sku}
+            response = requests.get(base_url, headers=headers, params=params)
+            response.raise_for_status()
+            items = response.json().get("items", [])
+            if items:
+                logging.info("✅ Found Zoho item by SKU: %s", sku)
+                return items[0]
+            logging.warning("❌ No match found for SKU=%s, falling back to name...", sku)
+
+        # 2️⃣ Next, try search by product name
+        if search_text:
+            params = {"organization_id": ORGANIZATION_ID, "search_text": search_text}
+            response = requests.get(base_url, headers=headers, params=params)
+            response.raise_for_status()
+            items = response.json().get("items", [])
+            if items:
+                logging.info("✅ Found Zoho item by name: %s", search_text)
+                return items[0]
+            logging.warning("❌ Product not found in Zoho Inventory: %s", search_text)
+            return None
+
+        return None
+
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 401 and retry:
+            logging.warning("⚠️ 401 Unauthorized - refreshing token...")
+            if refresh_token():
+                ACCESS_TOKEN = os.getenv("ZOHO_ACCESS_TOKEN")
+                return search_zoho_item(search_text, sku, retry=False)  # 👈 fixed call
+            logging.error("❌ Token refresh failed during search_zoho_item")
+            return None
+        else:
+            logging.error("API request failed in search_zoho_item: %s", e)
+            return None
+    except Exception as e:
+        logging.error("Error in search_zoho_item: %s", e)
+        return None
+
+def update_zoho_item(item_id, zoho_data, retry=True):
+    """
+    Update Zoho item by item ID with provided data.
+    Retry once if token refresh is needed.
+
+    Returns:
+        response object if successful,
+        or None if error occurs.
+    """
+    global ACCESS_TOKEN  # to update it after refresh
+
+    try:
+        response = requests.put(
+            f"{ZOHO_API_URL}/items/{item_id}?organization_id={ORGANIZATION_ID}",
+            headers={
+                "Authorization": f"Zoho-oauthtoken {ACCESS_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json=zoho_data,
+        )
+        response.raise_for_status()
+        return response
+
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 401 and retry:
+            logging.warning(
+                "401 Unauthorized - refreshing token and retrying update_zoho_item"
+            )
+            if refresh_token():
+                ACCESS_TOKEN = os.getenv("ZOHO_ACCESS_TOKEN")
+                return update_zoho_item(item_id, zoho_data, retry=False)
+            else:
+                logging.error("Token refresh failed during update_zoho_item")
+                return None
+        else:
+            logging.error("API request failed in update_zoho_item: %s", e)
+            return None
+    except Exception as e:
+        logging.error("Error in update_zoho_item: %s", e)
+        return None
+
 
 def fetch_zoho_item(item_id, retry=True):
     """
@@ -381,7 +476,7 @@ def process_zoho_item_payload(data):
         "description": data.get("product_tooltip") or data.get("description_purchase"),
         "rate": data.get("list_price", 0.0),
         "purchase_rate": data.get("standard_price", 0.0),
-        "reorder_level": 10,
+        "reorder_level": 10, 
         "track_inventory": True,
         "sku": data.get("barcode") or data.get("id"),
         "purchase_description": data.get("description_pickingout")

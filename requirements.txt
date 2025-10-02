@@ -18,14 +18,14 @@ itsdangerous==2.2.0
 Jinja2==3.1.6
 kombu==5.5.4
 MarkupSafe==3.0.2
-odoo-image-fetcher==0.1.8
+odoo-image-fetcher==0.1.9
 packaging==25.0
 prompt_toolkit==3.0.52
 python-dateutil==2.9.0.post0
 python-dotenv==1.1.1
 redis==4.3.4
 redis-client==1.0.1
-redis-namespace-client==0.1.0
+redis-namespace-client==0.1.2
 requests==2.32.5
 six==1.17.0
 tzdata==2025.2
