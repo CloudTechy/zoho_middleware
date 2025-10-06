@@ -201,6 +201,7 @@ def search_zoho_item(search_text=None, sku=None, retry=True):
         logging.error("Error in search_zoho_item: %s", e)
         return None
 
+
 def update_zoho_item(item_id, zoho_data, retry=True):
     """
     Update Zoho item by item ID with provided data.
@@ -240,6 +241,79 @@ def update_zoho_item(item_id, zoho_data, retry=True):
             return None
     except Exception as e:
         logging.error("Error in update_zoho_item: %s", e)
+        return None
+
+def update_odoo_product(item, retry=True):
+    # Extract necessary fields from Zoho item
+    item_id = item.get("item_id")
+    name = item.get("name")
+    rate = item.get("rate")
+    purchase_rate = item.get("purchase_rate")
+    description = item.get("description")
+    sku = item.get("sku")
+    track_inventory = item.get("track_inventory", False)
+    reorder_level = item.get("reorder_level", 0)
+    item_type = item.get("item_type", "sales")
+    unit = item.get("unit", "pcs")
+    product_type = item.get("product_type", "goods")
+    image_url = item.get("image_url")
+    if not item_id or not name:
+        logging.error("Missing item_id or name in Zoho item data")
+        return None
+    try:
+        # Search for the product in Odoo by id used as sku or name
+        domain = [["id", "=", sku]] if sku else [["name", "=", name]]
+        products = call_odoo("search_read", "product.template", [domain], {"limit": 1})
+
+        if products:
+            product = products[0]
+            product_id = product["id"]
+            logging.info("Found existing Odoo product with ID: %s", product_id)
+
+            # Prepare data for update
+            update_data = {
+                "name": name,
+                "list_price": rate or 0.0,
+                "standard_price": purchase_rate or 0.0,
+                "description_sale": description or "",
+                "default_code": sku or "",
+                "type": "product" if item_type == "inventory" else "service",
+                "reordering_min_qty": reorder_level or 0,
+            }
+
+            # Update the product in Odoo
+            res = call_odoo("write", "product.template", [[product_id], update_data])
+            logging.info("Odoo update response: %s", res)
+            if not res:
+                logging.error("Failed to update Odoo product ID %s", product_id)
+                return None
+            
+            logging.info("Updated Odoo product ID %s with Zoho data", product_id)
+
+            # Upload image if available
+            if image_url:
+                upload_item_image(image_url, item_id)
+
+            return product_id
+        else:
+            logging.warning("No matching Odoo product found for Zoho item: %s", name)
+            return None
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 401 and retry:
+            logging.warning(
+                "401 Unauthorized - refreshing token and retrying update_odoo_product"
+            )
+            if refresh_token():
+                ACCESS_TOKEN = os.getenv("ZOHO_ACCESS_TOKEN")
+                return update_odoo_product(item, retry=False)
+            else:
+                logging.error("Token refresh failed during update_odoo_product")
+                return None
+        else:
+            logging.error("API request failed in update_odoo_product: %s", e)
+            return None
+    except Exception as e:
+        logging.error("Error updating Odoo product: %s", traceback.format_exc())
         return None
 
 
@@ -531,7 +605,7 @@ def create_zoho_item(data, retry=True):
         return None
 
 
-def call_odoo(method, model, args, kwargs=None, rpc_id=999):
+def call_odoo_old(method, model, args, kwargs=None, rpc_id=999):
     payload = {
         "jsonrpc": "2.0",
         "method": "call",
@@ -550,7 +624,42 @@ def call_odoo(method, model, args, kwargs=None, rpc_id=999):
     response = requests.post(ODOO_URL, json=payload, verify=False)
     response.raise_for_status()
     return response.json().get("result")
+def call_odoo(method, model, args, kwargs=None, rpc_id=999):
+    # This function communicates with the Odoo API using JSON-RPC
+    payload = {
+        "jsonrpc": "2.0",
+        "method": "call",
+        "params": {
+            "service": "object",
+            "method": "execute_kw",
+            "args": [ODOO_DB, ODOO_UID, ODOO_PASSWORD, model, method, args],
+        },
+        "id": rpc_id,
+    }
 
+    if kwargs:
+        payload["params"]["args"].append(kwargs)
+
+    logging.info("Sending payload to Odoo: %s", payload)
+
+    try:
+        response = requests.post(ODOO_URL, json=payload, verify=False)
+        response.raise_for_status()  # This will raise an exception for 4xx or 5xx responses
+        
+        # Check if Odoo returned a result or an error
+        result = response.json().get("result")
+        if result is None:
+            error = response.json().get("error")
+            logging.error(f"Odoo API returned an error: {error}")
+            return None
+        return result
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Request failed to Odoo API: {e}")
+        return None
+    except ValueError as e:
+        logging.error(f"Failed to parse response from Odoo: {e}")
+        return None
 
 def upload_item_image(url, item_id):
     """This function uploads an image to a Zoho item."""
