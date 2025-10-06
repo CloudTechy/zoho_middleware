@@ -508,9 +508,6 @@ def process_zoho_webhook(flask_app, data):
             inventory_adjustment = data.get("inventory_adjustment")
             item = data.get("item")
             if inventory_adjustment:
-                logging.warning("Unrecognized webhook payload")
-                return jsonify({"status": "ignored", "message": "Empty payload"}), 200
-
                 line_items = inventory_adjustment.get("line_items", [])
                 if not line_items:
                     logging.warning("No line items in inventory adjustment")
