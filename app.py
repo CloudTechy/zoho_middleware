@@ -416,6 +416,65 @@ def process_odoo_webhook(flask_app, data):
                     200,
                 )
                 # Proceed with stock-related logic
+            elif id and "active" in data:
+                logging.info("Processing product archive/unarchive webhook action")
+                sku = str(id)
+                is_active = data.get("active")
+
+                # fetch item ID from Zoho based on SKU or name
+                item = search_zoho_item(None, sku)
+                if not item:
+                    logging.info(
+                        "Product not found in Zoho Inventory for archive/unarchive: %s",
+                        product_name,
+                    )
+                    return (
+                        jsonify(
+                            {
+                                "status": "error",
+                                "message": "Product not found in Zoho Inventory for archive/unarchive",
+                            }
+                        ),
+                        404,
+                    )
+                item_id = item.get("item_id")
+                logging.info(
+                    "Found Zoho item ID: %s for product archive/unarchive", item_id
+                )
+                # prepare payload for updating item active status in Zoho
+                zoho_item_payload = {"status": is_active}
+
+                update_status = update_zoho_item(item_id, zoho_item_payload)
+                logging.info("update status: %s", update_status)
+                if update_status:
+                    logging.info(
+                        "Successfully updated Zoho item active status to %s for item ID: %s",
+                        is_active,
+                        item_id,
+                    )
+                    return (
+                        jsonify(
+                            {
+                                "status": "success",
+                                "message": "Product archive/unarchive webhook processed successfully",
+                            }
+                        ),
+                        200,
+                    )
+                else:
+                    logging.error(
+                        "Failed to update Zoho item active status for item ID: %s",
+                        item_id,
+                    )
+                    return (
+                        jsonify(
+                            {
+                                "status": "error",
+                                "message": "Failed to update Zoho item active status",
+                            }
+                        ),
+                        500,
+                    )
             else:
                 logging.info(
                     "Ignoring non-stock-related webhook action: %s", model_action

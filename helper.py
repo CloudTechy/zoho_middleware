@@ -214,6 +214,17 @@ def update_zoho_item(item_id, zoho_data, retry=True):
     global ACCESS_TOKEN  # to update it after refresh
 
     try:
+        if "status" in zoho_data:
+            logging.info("Updating item status to: %s", zoho_data["status"])
+            is_active = "active" if zoho_data["status"]  else "inactive"
+            url = f"{ZOHO_API_URL}/items/{item_id}/{is_active}?organization_id={ORGANIZATION_ID}"
+            response = requests.post(
+                url,
+                headers={
+                    "Authorization": f"Zoho-oauthtoken {ACCESS_TOKEN}"
+                }
+                )
+            return response
         response = requests.put(
             f"{ZOHO_API_URL}/items/{item_id}?organization_id={ORGANIZATION_ID}",
             headers={
@@ -251,7 +262,6 @@ def update_odoo_product(item, retry=True):
     purchase_rate = item.get("purchase_rate")
     description = item.get("description")
     sku = item.get("sku")
-    track_inventory = item.get("track_inventory", False)
     reorder_level = item.get("reorder_level", 0)
     item_type = item.get("item_type", "sales")
     unit = item.get("unit", "pcs")
@@ -604,26 +614,6 @@ def create_zoho_item(data, retry=True):
         logging.error("Error in create_zoho_item: %s", e)
         return None
 
-
-def call_odoo_old(method, model, args, kwargs=None, rpc_id=999):
-    payload = {
-        "jsonrpc": "2.0",
-        "method": "call",
-        "params": {
-            "service": "object",
-            "method": "execute_kw",
-            "args": [ODOO_DB, ODOO_UID, ODOO_PASSWORD, model, method, args],
-        },
-        "id": rpc_id,
-    }
-    if kwargs:
-        payload["params"]["args"].append(kwargs)
-
-    logging.info("Sending payload: %s", payload)
-
-    response = requests.post(ODOO_URL, json=payload, verify=False)
-    response.raise_for_status()
-    return response.json().get("result")
 def call_odoo(method, model, args, kwargs=None, rpc_id=999):
     # This function communicates with the Odoo API using JSON-RPC
     payload = {
