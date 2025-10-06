@@ -266,6 +266,7 @@ def update_odoo_product(item, retry=True):
     item_type = item.get("item_type", "sales")
     unit = item.get("unit", "pcs")
     product_type = item.get("product_type", "goods")
+    status = item.get("status")
     image_url = item.get("image_url")
     if not item_id or not name:
         logging.error("Missing item_id or name in Zoho item data")
@@ -289,6 +290,7 @@ def update_odoo_product(item, retry=True):
                 "default_code": sku or "",
                 "type": "product" if item_type == "inventory" else "service",
                 "reordering_min_qty": reorder_level or 0,
+                "active": status == "active",
             }
 
             # Update the product in Odoo
